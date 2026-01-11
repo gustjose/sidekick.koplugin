@@ -73,7 +73,6 @@ function SideKickSync:addToMainMenu(menu_items)
     }
 end
 
--- A FUNÇÃO MÁGICA REVISADA
 function SideKickSync:getCurrentState()
     local page = nil
     local percent = nil
@@ -82,10 +81,7 @@ function SideKickSync:getCurrentState()
     
     -- 1. Garante acesso à UI
     local ui = self.ui or (ReaderUI.instance and ReaderUI.instance.ui)
-    if not ui then 
-        logger.warn("Sidekick: UI não encontrada")
-        return nil 
-    end
+    if not ui then return nil end
 
     local doc = ui.document
     local view = ui.view
@@ -103,34 +99,27 @@ function SideKickSync:getCurrentState()
     end
 
     -- 3. TENTATIVA FOOTER (A Fonte da Verdade)
-    -- O footer tem as variáveis 'percent_finished', 'pageno' e 'pages' calculadas corretamente.
-    -- Ele pode estar em 'ui.footer' OU 'ui.view.footer' (dependendo da arquitetura interna)
+    -- Tenta encontrar o footer em ui.footer ou view.footer
     local footer = ui.footer
     if not footer and view and view.footer then 
         footer = view.footer 
-        -- logger.info("Sidekick: Footer encontrado em view.footer")
     end
 
     if footer then
-        -- a) Porcentagem exata (ex: 0.13)
+        -- a) Porcentagem exata
         if type(footer.percent_finished) == "number" then
             percent = footer.percent_finished
-            -- logger.info("Sidekick: Percentual footer: " .. percent)
         elseif footer.progress_bar and type(footer.progress_bar.percentage) == "number" then
             percent = footer.progress_bar.percentage
         end
 
-        -- b) Página atual (Resolve problemas de scroll mode)
+        -- b) Página atual e Total (Correção para Scroll Mode)
         if (not page or page <= 1) and type(footer.pageno) == "number" then
             page = footer.pageno
         end
-
-        -- c) Total de páginas (Resolve o "de 0")
         if (not total_pages or total_pages == 0) and type(footer.pages) == "number" then
             total_pages = footer.pages
         end
-    else
-        logger.warn("Sidekick: Footer não encontrado nem em ui.footer nem em view.footer")
     end
 
     -- 4. TENTATIVA DOC (Backend - XPointer)
@@ -145,24 +134,10 @@ function SideKickSync:getCurrentState()
         end
     end
 
-    -- 5. DIAGNÓSTICO DE EMERGÊNCIA (Salva nos logs se falhar)
-    if (not percent or percent == 0) then
-        logger.warn("Sidekick DEBUG: Percentual é 0. Listando estrutura da UI para encontrar o footer:")
-        local keys = {}
-        for k, _ in pairs(ui) do table.insert(keys, k) end
-        logger.warn("Sidekick DEBUG: ui keys: " .. table.concat(keys, ", "))
-        
-        if view then
-            local vkeys = {}
-            for k, _ in pairs(view) do table.insert(vkeys, k) end
-            logger.warn("Sidekick DEBUG: view keys: " .. table.concat(vkeys, ", "))
-        end
-    end
-
-    -- 6. CÁLCULOS FINAIS
+    -- 5. CÁLCULOS FINAIS
     if not page then page = 1 end
     
-    -- Recalcula percentual na mão se tivermos os números brutos
+    -- Recalcula percentual na mão se tivermos os números brutos e o footer falhou
     if (not percent or percent == 0) and page and total_pages and total_pages > 0 then
         percent = page / total_pages
     end
@@ -202,10 +177,9 @@ function SideKickSync:executeSave(is_background)
     local state = self:getCurrentState()
     
     if state then
-        local success = progress.save_from_cache(state, is_background)
+        progress.save_from_cache(state, is_background)
         if not is_background then
-            local msg = success and "Progresso Salvo!" or "Erro ao Salvar"
-            UIManager:show(InfoMessage:new{ text = msg, timeout = 2 })
+            UIManager:show(InfoMessage:new{ text = "Progresso Salvo!", timeout = 2 })
         end
     end
     self.is_saving = false
