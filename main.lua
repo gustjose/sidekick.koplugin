@@ -12,12 +12,10 @@ local progress_ok, progress = pcall(require, "progress")
 local SideKickSync = WidgetContainer:extend{
     name = "SideKickSync",
     is_doc_only = true,
-    save_timer = nil,
-    last_activity = 0,
-    last_force_save = 0,
     is_saving = false,
-    blocking_autosave = false,
-    SAVE_DELAY = 5,
+    blocking_autosave = true,
+    time_next_sync = os.time(),
+    delay = 5,
 }
 
 function SideKickSync:init()
@@ -25,15 +23,13 @@ function SideKickSync:init()
         logger.err("Sidekick: Falha ao carregar modulo progress")
         return 
     end
-
     if self.ui.menu then self.ui.menu:registerToMainMenu(self) end
     self:onDispatcherRegisterActions()
     logger.info("Sidekick: Modulo inicializado.")
 end
 
 function SideKickSync:onReaderReady()
-    -- Aguarda 2 segundos para garantir que o livro carregou a estrutura
-    logger.info("Sidekick: Reader pronto. Agendando checkSync.")
+    logger.info("Sidekick: Reader pronto. Iniciando verificacao de Sync...")
     UIManager:scheduleIn(2, function() self:checkSync() end)
 end
 
@@ -63,7 +59,7 @@ function SideKickSync:addToMainMenu(menu_items)
                     local doc_state = self:getCurrentState()
                     local msg = ""
                     if doc_state then
-                        msg = string.format("Pg: %d/%d (%.1f%%)", 
+                        msg = string.format("Local: Pg %d/%d (%.1f%%)", 
                             doc_state.page or 0, 
                             doc_state.total_pages or 0,
                             (doc_state.percent or 0) * 100)
@@ -71,6 +67,7 @@ function SideKickSync:addToMainMenu(menu_items)
                         msg = "Erro ao ler estado"
                     end
                     UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
+                    self:checkSync() 
                 end
             }
         }
@@ -81,7 +78,6 @@ function SideKickSync:getCurrentState()
     local page = nil
     local percent = nil
     local total_pages = nil
-    local xpath = nil
     
     local ui = self.ui or (ReaderUI.instance and ReaderUI.instance.ui)
     if not ui then return nil end
@@ -89,7 +85,6 @@ function SideKickSync:getCurrentState()
     local doc = ui.document
     local view = ui.view
 
-    -- TENTATIVA VIEW
     if view then
         local props = {"current_page", "page_num", "page", "pageno"}
         for _, prop in ipairs(props) do
@@ -101,11 +96,8 @@ function SideKickSync:getCurrentState()
         if type(view.page_count) == "number" then total_pages = view.page_count end
     end
 
-    -- TENTATIVA FOOTER
     local footer = ui.footer
-    if not footer and view and view.footer then 
-        footer = view.footer 
-    end
+    if not footer and view and view.footer then footer = view.footer end
 
     if footer then
         if type(footer.percent_finished) == "number" then
@@ -121,7 +113,7 @@ function SideKickSync:getCurrentState()
         end
     end
 
-    -- TENTATIVA DOC
+    local xpath = nil
     if doc then
         local ok_x, res_x = pcall(function() return doc:getXPointer() end)
         if ok_x then xpath = res_x end
@@ -149,41 +141,32 @@ function SideKickSync:getCurrentState()
         percent = percent or 0,
         page = page,
         total_pages = total_pages or 0,
-        -- xpath = xpath,
+        xpath = xpath,
         file = file_path,
     }
 end
 
-function SideKickSync:scheduleSave()
+function SideKickSync:triggerAutoSave()
     if not progress_ok then return end
     if self.blocking_autosave then return end
 
-    self.last_activity = os.time()
-
-    if self.save_timer then return end
-
-    local function timer_callback()
-        if self.blocking_autosave then
-            self.save_timer = nil
-            return
-        end
-
-        local now = os.time()
-        local elapsed = now - self.last_activity
+    if self.blocking_autosave == false then
+        local agora = os.time()
         
-        if elapsed >= self.SAVE_DELAY then
-            self.save_timer = nil
+        if self.time_next_sync < agora then
             self:executeSave(true)
+            self.time_next_sync = agora + self.delay
+            logger.info("Sidekick: Autosave - Salvo.")
         else
-            local remaining = self.SAVE_DELAY - elapsed
-            if remaining < 1 then remaining = 1 end
-            self.save_timer = UIManager:scheduleIn(remaining, timer_callback)
+            logger.info("Sidekick: Autosave - Pulado.")
         end
+
     end
 
-    self.save_timer = UIManager:scheduleIn(self.SAVE_DELAY, timer_callback)
 end
 
+-- Esta função faz o trabalho pesado de gravar no disco.
+-- Você pode chamá-la quando quiser.
 function SideKickSync:executeSave(is_background)
     if self.is_saving then return end
     if self.blocking_autosave then return end
@@ -191,34 +174,31 @@ function SideKickSync:executeSave(is_background)
     self.is_saving = true
     local state = self:getCurrentState()
     if state then
-        progress.save_from_cache(state, is_background)
-        if not is_background then
-            UIManager:show(InfoMessage:new{ text = "Progresso Salvo!", timeout = 2 })
+        local saved = progress.save_from_cache(state, is_background)
+        if saved and not is_background then
+            UIManager:show(InfoMessage:new{ text = "Progresso Salvo!", timeout = 1 })
         end
     end
     self.is_saving = false
 end
 
 -- === EVENTOS ===
-function SideKickSync:onPosUpdate() self:scheduleSave() end
-function SideKickSync:onPageUpdate() self:scheduleSave() end
+-- Mantive a ligação: quando o evento ocorre, chama sua função triggerAutoSave
+function SideKickSync:onPosUpdate() self:triggerAutoSave() end
+function SideKickSync:onPageUpdate() self:triggerAutoSave() end
+
+-- Eventos críticos (Mantidos o Salvamento Forçado)
 function SideKickSync:onCloseDocument() self:forceSave(true) end
 function SideKickSync:onSuspend() self:forceSave(true) end
 function SideKickSync:onQuit() self:forceSave(true) end
 
 function SideKickSync:forceSave(silent)
-    if self.save_timer then
-        UIManager:unschedule(self.save_timer)
-        self.save_timer = nil
-    end
-    local now = os.time()
-    if self.last_force_save and (now - self.last_force_save) < 2 then return end
-    self.last_force_save = now
+    -- Removi o cancelamento de timer, pois não há mais timer.
     logger.info("Sidekick: Executando salvamento forçado.")
     self:executeSave(silent)
 end
 
--- === LÓGICA DE SINCRONIZAÇÃO (USANDO BROADCAST) ===
+-- === SINCRONIZAÇÃO ===
 function SideKickSync:checkSync()
     if not progress_ok then return end
     
@@ -235,34 +215,31 @@ function SideKickSync:checkSync()
     if remote_data then
         local r_page = tonumber(remote_data.page) or 0
         local l_page = tonumber(state.page) or 0
-        
-        -- Só avança se o remoto for estritamente maior
-        if r_page <= l_page then return end
 
-        logger.info("Sidekick: Avanço detectado (Remoto: " .. r_page .. " > Local: " .. l_page .. ")")
-
-        -- Bloqueia autosave para evitar loops
-        self.blocking_autosave = true
-        if self.save_timer then
-            UIManager:unschedule(self.save_timer)
-            self.save_timer = nil
-        end
+        local r_timestamp = tonumber(remote_data.timestamp) or 0
         
-        -- Feedback visual
-        UIManager:show(InfoMessage:new{ text = "Sync: Indo para Pág " .. r_page, timeout = 2 })
+        logger.info(string.format("Sidekick: Check Sync - Remoto: %d vs Local: %d", r_page, l_page))
+
+        if r_page > l_page then
+            self.blocking_autosave = true
             
-        -- A SOLUÇÃO: broadcastEvent
-        -- Não precisamos caçar a "ui" certa. O UIManager entrega pra quem interessar.
-        UIManager:nextTick(function()
-            logger.info("Sidekick: Broadcastindo evento GotoPage para", r_page)
+            UIManager:show(InfoMessage:new{ text = "Sync: Indo para Pág " .. r_page, timeout = 2 })
             
-            -- Envia para toda a aplicação. O ReaderPaging vai pegar isso.
-            UIManager:broadcastEvent(Event:new("GotoPage", r_page))
-            
-            -- Libera a trava logo após o envio
+            UIManager:nextTick(function()
+                logger.info("Sidekick: Broadcastindo evento GotoPage para", r_page)
+                UIManager:broadcastEvent(Event:new("GotoPage", r_page))
+                
+                UIManager:scheduleIn(2, function()
+                    self.blocking_autosave = false
+                end)
+            end)
+        else
+            logger.info("Sidekick: Sincronização OK (Remoto não é maior). Nenhuma ação necessária.")
             self.blocking_autosave = false
-            self.last_activity = os.time()
-        end)
+        end
+    else
+        logger.info("Sidekick: Nenhum dado remoto valido encontrado.")
+        self.blocking_autosave = false
     end
 end
 
