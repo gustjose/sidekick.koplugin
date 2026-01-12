@@ -3,5 +3,5 @@ return {
     name = "SideKick",
     fullname = _("Sidekick - Progress Sync"),
     description = _("Gera arquivos de progresso locais para sincronização via Syncthing."),
-    version = "0.2.1"
+    version = "0.2.2"
 }
