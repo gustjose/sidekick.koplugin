@@ -15,7 +15,8 @@ REMOTE_PATH = "/storage/emulated/0/koreader/plugins/sidekick.koplugin/"
 FILES_TO_SYNC = [
     "main.lua",
     "progress.lua",
-    "_meta.lua"
+    "_meta.lua",
+    "utils.lua"
 ]
 
 # Termo para filtrar no log

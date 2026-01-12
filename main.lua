@@ -1,11 +1,11 @@
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
-local logger = require("logger")
 local ReaderUI = require("apps/reader/readerui")
 local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
 local _ = require("gettext")
+local utils = require("utils")
 
 local progress_ok, progress = pcall(require, "progress")
 
@@ -13,7 +13,7 @@ local SideKickSync = WidgetContainer:extend{
     name = "SideKickSync",
     is_doc_only = true,
     is_saving = false,
-    blocking_autosave = false, -- Começa desbloqueado (safe default)
+    blocking_autosave = true, 
     time_next_sync = os.time(),
     delay = 5,
     last_local_interaction = 0,
@@ -21,16 +21,16 @@ local SideKickSync = WidgetContainer:extend{
 
 function SideKickSync:init()
     if not progress_ok then 
-        logger.err("Sidekick: Falha ao carregar modulo progress")
+        utils.logErr("Falha ao carregar modulo progress")
         return 
     end
     if self.ui.menu then self.ui.menu:registerToMainMenu(self) end
     self:onDispatcherRegisterActions()
-    logger.info("Sidekick: Modulo inicializado.")
+    utils.logInfo("Modulo inicializado.")
 end
 
 function SideKickSync:onReaderReady()
-    logger.info("Sidekick: Reader pronto. Iniciando verificacao de Sync...")
+    utils.logInfo("Reader pronto. Iniciando verificacao de Sync...")
     UIManager:scheduleIn(2, function() self:checkSync() end)
 end
 
@@ -75,6 +75,8 @@ function SideKickSync:addToMainMenu(menu_items)
     }
 end
 
+--- Coleta o estado atual da leitura (página, porcentagem, arquivo).
+-- @return Table|nil: Estado atual ou nil se não houver documento carregado.
 function SideKickSync:getCurrentState()
     local page = nil
     local percent = nil
@@ -86,6 +88,7 @@ function SideKickSync:getCurrentState()
     local doc = ui.document
     local view = ui.view
 
+    -- Tenta extrair página e total da view
     if view then
         local props = {"current_page", "page_num", "page", "pageno"}
         for _, prop in ipairs(props) do
@@ -97,6 +100,7 @@ function SideKickSync:getCurrentState()
         if type(view.page_count) == "number" then total_pages = view.page_count end
     end
 
+    -- Tenta extrair do rodapé se a view falhar ou para complementar
     local footer = ui.footer
     if not footer and view and view.footer then footer = view.footer end
 
@@ -114,6 +118,7 @@ function SideKickSync:getCurrentState()
         end
     end
 
+    -- Fallback via XPath
     local xpath = nil
     if doc then
         local ok_x, res_x = pcall(function() return doc:getXPointer() end)
@@ -147,29 +152,26 @@ function SideKickSync:getCurrentState()
     }
 end
 
+--- Gatilho automático para salvar o progresso.
+-- Aplica throttling (delay) para evitar escritas excessivas.
 function SideKickSync:triggerAutoSave()
     if not progress_ok then return end
     
-    -- Atualiza sempre que mexer para garantir que este dispositivo é o "dono" da vez
     self.last_local_interaction = os.time()
 
-    if self.blocking_autosave then 
-        -- logger.info("Sidekick: Save bloqueado (Sincronizando...)")
-        return 
-    end
+    if self.blocking_autosave then return end
     
     local agora = os.time()
     
-    -- Lógica de Throttle: Só salva se passou o tempo do delay
     if self.time_next_sync < agora then
         self:executeSave(true)
         self.time_next_sync = agora + self.delay
-        logger.info("Sidekick: Autosave - Salvo.")
-    else
-        -- logger.info("Sidekick: Autosave - Pulado (Throttle).")
+        utils.logInfo("Autosave - Salvo.")
     end
 end
 
+--- Executa a rotina de salvamento via módulo Progress.
+-- @param is_background Boolean: Define se o salvamento deve ser silencioso na UI.
 function SideKickSync:executeSave(is_background)
     if self.is_saving then return end
     if self.blocking_autosave then return end
@@ -185,21 +187,20 @@ function SideKickSync:executeSave(is_background)
     self.is_saving = false
 end
 
--- === EVENTOS ===
+-- === Eventos de UI ===
 function SideKickSync:onPosUpdate() self:triggerAutoSave() end
 function SideKickSync:onPageUpdate() self:triggerAutoSave() end
-
--- Eventos críticos
 function SideKickSync:onCloseDocument() self:forceSave(true) end
 function SideKickSync:onSuspend() self:forceSave(true) end
 function SideKickSync:onQuit() self:forceSave(true) end
 
 function SideKickSync:forceSave(silent)
-    logger.info("Sidekick: Executando salvamento forçado.")
+    utils.logInfo("Executando salvamento forçado.")
     self:executeSave(silent)
 end
 
--- === SINCRONIZAÇÃO ===
+--- Verifica se há progresso remoto (via arquivo) mais recente ou avançado e sincroniza.
+-- Lógica: Furthest Read Wins (Progresso Maior) OU Update Recente (Timestamp).
 function SideKickSync:checkSync()
     if not progress_ok then return end
     
@@ -215,44 +216,35 @@ function SideKickSync:checkSync()
     
     if remote_data then
         local r_page = tonumber(remote_data.page) or 0
-        local l_page = tonumber(state.page) or 0
         local r_timestamp = tonumber(remote_data.timestamp) or 0
         local r_percent = tonumber(remote_data.percent) or 0
-        
-        -- Adicionamos state.percent para log e comparação
         local l_percent = state.percent or 0
 
-        logger.info(string.format("Sidekick: Check Sync (Resolvido: %s) - Remoto: %.2f%% (%d) vs Local: %.2f%% (%d)", 
+        utils.logInfo(string.format("Check Sync (Resolvido: %s) - Remoto: %.2f%% (%d) vs Local: %.2f%% (%d)", 
             tostring(conflict_resolved), r_percent*100, r_timestamp, l_percent*100, self.last_local_interaction))
 
-        -- CRITÉRIOS DE SINCRONIZAÇÃO ATUALIZADOS:
-        -- 1. Timestamp remoto é mais novo que minha interação (Sync Padrão)
-        -- 2. Conflito foi resolvido a favor do remoto (Sync de Correção)
-        -- 3. [NOVO] Remoto tem progresso SUBSTANCIALMENTE maior (Furthest Read Wins)
-        
+        -- Critérios de Sincronização
         local is_newer = r_timestamp > self.last_local_interaction
-        local is_ahead = r_percent > (l_percent + 0.001) -- Margem de 0.1% para evitar loops
+        local is_ahead = r_percent > (l_percent + 0.001) 
         
         local should_sync = (is_newer or conflict_resolved or is_ahead)
-        
         local diff_percent = math.abs(r_percent - l_percent)
         
-        -- Verifica se vale a pena mover (diferença existe e sync foi aprovado)
         if should_sync and (diff_percent > 0.001) then
             
             self.blocking_autosave = true 
             
-            -- [CÁLCULO DINÂMICO]
+            -- Cálculo da página alvo
             local target_page = r_page 
-            
             if r_percent > 0 and state.total_pages and state.total_pages > 0 then
                 target_page = math.floor(state.total_pages * r_percent)
                 if target_page < 1 then target_page = 1 end
                 if target_page > state.total_pages then target_page = state.total_pages end
                 
-                logger.info(string.format("Sidekick: Avançando para Pg %d (%.2f%%) - Motivo: Ahead=%s, Newer=%s", target_page, r_percent*100, tostring(is_ahead), tostring(is_newer)))
+                utils.logInfo(string.format("Avançando para Pg %d (%.2f%%) - Motivo: Ahead=%s, Newer=%s", 
+                    target_page, r_percent*100, tostring(is_ahead), tostring(is_newer)))
             else
-                logger.info("Sidekick: Usando número de página remoto direto.")
+                utils.logInfo("Usando número de página remoto direto.")
             end
             
             UIManager:show(InfoMessage:new{ text = "Sync: Indo para Pág " .. target_page, timeout = 2 })
@@ -265,9 +257,7 @@ function SideKickSync:checkSync()
                 end)
             end)
         else
-            -- Se não sincronizou, mas o remoto era maior, significa que estamos "travados" por algum motivo?
-            -- Com a lógica 'is_ahead', isso não deve mais acontecer.
-            logger.info("Sidekick: Nada a fazer (Sincronizado ou Local é Maior).")
+            utils.logInfo("Nada a fazer (Sincronizado ou Local é Maior).")
             self.blocking_autosave = false
         end
     else
