@@ -1,7 +1,7 @@
 local json = require("json")
 local docsettings = require("frontend/docsettings")
 local lfs = require("libs/libkoreader-lfs")
-local utils = require("utils") -- Carrega o novo módulo de logs
+local utils = require("utils")
 
 local Progress = {
     extension = ".sidekick.json" 

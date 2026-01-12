@@ -265,4 +265,31 @@ function SideKickSync:checkSync()
     end
 end
 
+function SideKickSync:executeSave(is_background)
+    if self.is_saving then return end
+    if self.blocking_autosave then return end
+
+    self.is_saving = true
+    local state = self:getCurrentState()
+    if state then
+        local saved = progress.save_from_cache(state, is_background)
+        if saved then
+            if not is_background then
+                UIManager:show(InfoMessage:new{ text = "Progresso Salvo!", timeout = 1 })
+            end
+            
+            -- [NOVO] Solicita que o Syncthing atualize este arquivo imediatamente
+            -- Precisamos passar o caminho relativo se quisermos otimizar, 
+            -- ou nil para escanear a pasta toda.
+            -- Para simplificar, vamos tentar extrair o nome do arquivo:
+            local filename = state.file:match("([^/]+)$")
+            local sidekick_file = filename .. ".sidekick.json"
+            
+            -- Dispara o sync
+            utils.triggerSyncthing(sidekick_file) 
+        end
+    end
+    self.is_saving = false
+end
+
 return SideKickSync
