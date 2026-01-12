@@ -1,26 +1,75 @@
 local logger = require("logger")
 local ltn12 = require("ltn12")
+local json = require("json") 
 
 -- Tenta carregar bibliotecas de rede
 local http = require("socket.http")
-local has_ssl, https = pcall(require, "ssl.https") -- LuaSec para HTTPS
+local has_ssl, https = pcall(require, "ssl.https") 
 
 local Utils = {}
-
--- === CONFIGURAÇÕES ===
--- IMPORTANTE: Mudei para HTTPS para evitar o erro 307
-local SYNC_URL = "https://127.0.0.1:8384" 
-local SYNC_API_KEY = "J3ewiacqu5idyf76Lq2fvJp5rUU6RKEG"
-local SYNC_FOLDER_ID = "gwfho-uld6e"
 
 function Utils.logInfo(...) logger.info("Sidekick:", ...) end
 function Utils.logWarn(...) logger.warn("Sidekick:", ...) end
 function Utils.logErr(...)  logger.err("Sidekick:", ...) end
 
-function Utils.triggerSyncthing(specific_path)
-    if not SYNC_API_KEY or SYNC_API_KEY == "" then return end
+-- === Carregamento do settings.json Local ===
 
-    local full_url = string.format("%s/rest/db/scan?folder=%s", SYNC_URL, SYNC_FOLDER_ID)
+-- Obtém o caminho absoluto da pasta onde este arquivo utils.lua está
+local function get_plugin_path()
+    local path = debug.getinfo(1).source:match("@?(.*[\\/])")
+    return path or ""
+end
+
+-- Lê o arquivo settings.json local
+function Utils.load_config()
+    local path = get_plugin_path() .. "settings.json"
+    local f = io.open(path, "r")
+    
+    -- Valores padrão caso falhe
+    local config = {
+        url = "http://127.0.0.1:8384",
+        api_key = "",
+        folder_id = "default"
+    }
+
+    if not f then
+        Utils.logWarn("Arquivo settings.json nao encontrado em:", path)
+        return config
+    end
+
+    local content = f:read("*a")
+    f:close()
+
+    if content then
+        local ok, data = pcall(json.decode, content)
+        if ok and type(data) == "table" then
+            Utils.logInfo("Configurações carregadas de settings.json")
+            return data
+        else
+            Utils.logErr("Erro ao decodificar settings.json")
+        end
+    end
+
+    return config
+end
+
+function Utils.triggerSyncthing(specific_path)
+    -- Carrega a config fresca do arquivo a cada execução
+    local config = Utils.load_config()
+    
+    local url = config.url
+    local api_key = config.api_key
+    local folder_id = config.folder_id
+
+    if not api_key or api_key == "" or api_key == "COLE_SUA_API_KEY_AQUI" then 
+        Utils.logWarn("API Key invalida. Edite o arquivo settings.json na pasta do plugin.")
+        return 
+    end
+
+    -- Remove barra final da URL se houver
+    url = url:gsub("/+$", "")
+
+    local full_url = string.format("%s/rest/db/scan?folder=%s", url, folder_id)
     if specific_path then
         local clean_path = specific_path:gsub(" ", "%%20")
         full_url = full_url .. "&sub=" .. clean_path
@@ -31,36 +80,31 @@ function Utils.triggerSyncthing(specific_path)
     local response_body = {}
     local res, code, headers, status
     
-    -- Detecta se é HTTPS e se temos a biblioteca
     if full_url:find("^https") then
         if not has_ssl then
             Utils.logErr("ERRO: URL é HTTPS mas biblioteca ssl.https nao carregou.")
             return
         end
         
-        -- Configuração especial para HTTPS (Ignora certificado auto-assinado)
         res, code, headers, status = https.request{
             url = full_url,
             method = "POST",
             headers = {
-                ["X-API-Key"] = SYNC_API_KEY,
+                ["X-API-Key"] = api_key,
                 ["Content-Length"] = "0"
             },
             source = ltn12.source.string(""),
             sink = ltn12.sink.table(response_body),
-            
-            -- CRUCIAL: Ignora validação de certificado (necessário para localhost/android)
             protocol = "any",
             options = {"all"},
             verify = "none" 
         }
     else
-        -- Fallback para HTTP simples
         res, code, headers, status = http.request{
             url = full_url,
             method = "POST",
             headers = {
-                ["X-API-Key"] = SYNC_API_KEY,
+                ["X-API-Key"] = api_key,
                 ["Content-Length"] = "0"
             },
             sink = ltn12.sink.table(response_body)
@@ -70,8 +114,7 @@ function Utils.triggerSyncthing(specific_path)
     if code == 200 then
         Utils.logInfo("Syncthing respondeu: OK (Scan iniciado)")
     else
-        -- Se der 307 novamente, o log nos avisará
-        Utils.logWarn("Syncthing falhou. Codigo HTTP:", code, "Erro/Status:", status or res)
+        Utils.logWarn("Syncthing falhou. Codigo HTTP:", code, "Erro:", status or res)
     end
 end
 
