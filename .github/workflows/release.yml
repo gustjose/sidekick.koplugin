@@ -3,10 +3,10 @@ name: Release Plugin
 on:
   push:
     tags:
-      - "*" # Aciona o workflow em qualquer tag enviada (ex: 0.1.0, 1.0.0)
+      - "*"
 
 permissions:
-  contents: write # Permissão necessária para criar releases
+  contents: write
 
 jobs:
   build-and-release:
@@ -19,16 +19,13 @@ jobs:
 
       - name: Prepare Zip
         run: |
-          # Define o nome da pasta padrão do KOReader
           PLUGIN_FOLDER="sidekick.koplugin"
 
-          # Cria a pasta temporária para organizar o zip
           mkdir -p release_tmp/$PLUGIN_FOLDER
 
-          # Copia os arquivos do plugin para a pasta temporária
-          # Exclui a pasta scripts, configurações do git, e a própria pasta temporária
           rsync -av . release_tmp/$PLUGIN_FOLDER/ \
             --exclude="scripts" \
+            --exclude=".gitattributes" \
             --exclude=".git" \
             --exclude=".github" \
             --exclude=".gitignore" \
@@ -46,5 +43,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: sidekick.koplugin.zip
-          generate_release_notes: true # Gera notas automáticas baseadas nos commits
+          generate_release_notes: true
           make_latest: true
