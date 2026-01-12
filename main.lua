@@ -13,9 +13,10 @@ local SideKickSync = WidgetContainer:extend{
     name = "SideKickSync",
     is_doc_only = true,
     is_saving = false,
-    blocking_autosave = true,
+    blocking_autosave = false, -- Começa desbloqueado (safe default)
     time_next_sync = os.time(),
     delay = 5,
+    last_local_interaction = 0,
 }
 
 function SideKickSync:init()
@@ -148,25 +149,27 @@ end
 
 function SideKickSync:triggerAutoSave()
     if not progress_ok then return end
-    if self.blocking_autosave then return end
+    
+    -- Atualiza sempre que mexer para garantir que este dispositivo é o "dono" da vez
+    self.last_local_interaction = os.time()
 
-    if self.blocking_autosave == false then
-        local agora = os.time()
-        
-        if self.time_next_sync < agora then
-            self:executeSave(true)
-            self.time_next_sync = agora + self.delay
-            logger.info("Sidekick: Autosave - Salvo.")
-        else
-            logger.info("Sidekick: Autosave - Pulado.")
-        end
-
+    if self.blocking_autosave then 
+        -- logger.info("Sidekick: Save bloqueado (Sincronizando...)")
+        return 
     end
-
+    
+    local agora = os.time()
+    
+    -- Lógica de Throttle: Só salva se passou o tempo do delay
+    if self.time_next_sync < agora then
+        self:executeSave(true)
+        self.time_next_sync = agora + self.delay
+        logger.info("Sidekick: Autosave - Salvo.")
+    else
+        -- logger.info("Sidekick: Autosave - Pulado (Throttle).")
+    end
 end
 
--- Esta função faz o trabalho pesado de gravar no disco.
--- Você pode chamá-la quando quiser.
 function SideKickSync:executeSave(is_background)
     if self.is_saving then return end
     if self.blocking_autosave then return end
@@ -183,17 +186,15 @@ function SideKickSync:executeSave(is_background)
 end
 
 -- === EVENTOS ===
--- Mantive a ligação: quando o evento ocorre, chama sua função triggerAutoSave
 function SideKickSync:onPosUpdate() self:triggerAutoSave() end
 function SideKickSync:onPageUpdate() self:triggerAutoSave() end
 
--- Eventos críticos (Mantidos o Salvamento Forçado)
+-- Eventos críticos
 function SideKickSync:onCloseDocument() self:forceSave(true) end
 function SideKickSync:onSuspend() self:forceSave(true) end
 function SideKickSync:onQuit() self:forceSave(true) end
 
 function SideKickSync:forceSave(silent)
-    -- Removi o cancelamento de timer, pois não há mais timer.
     logger.info("Sidekick: Executando salvamento forçado.")
     self:executeSave(silent)
 end
@@ -209,36 +210,67 @@ function SideKickSync:checkSync()
         file = state.file, 
         getVmPage = function() return state.page end 
     }
-    
-    local remote_data = progress.check_remote_progress(fake_doc)
+
+    local remote_data, conflict_resolved = progress.check_remote_progress(fake_doc)
     
     if remote_data then
         local r_page = tonumber(remote_data.page) or 0
         local l_page = tonumber(state.page) or 0
-
         local r_timestamp = tonumber(remote_data.timestamp) or 0
+        local r_percent = tonumber(remote_data.percent) or 0
         
-        logger.info(string.format("Sidekick: Check Sync - Remoto: %d vs Local: %d", r_page, l_page))
+        -- Adicionamos state.percent para log e comparação
+        local l_percent = state.percent or 0
 
-        if r_page > l_page then
-            self.blocking_autosave = true
+        logger.info(string.format("Sidekick: Check Sync (Resolvido: %s) - Remoto: %.2f%% (%d) vs Local: %.2f%% (%d)", 
+            tostring(conflict_resolved), r_percent*100, r_timestamp, l_percent*100, self.last_local_interaction))
+
+        -- CRITÉRIOS DE SINCRONIZAÇÃO ATUALIZADOS:
+        -- 1. Timestamp remoto é mais novo que minha interação (Sync Padrão)
+        -- 2. Conflito foi resolvido a favor do remoto (Sync de Correção)
+        -- 3. [NOVO] Remoto tem progresso SUBSTANCIALMENTE maior (Furthest Read Wins)
+        
+        local is_newer = r_timestamp > self.last_local_interaction
+        local is_ahead = r_percent > (l_percent + 0.001) -- Margem de 0.1% para evitar loops
+        
+        local should_sync = (is_newer or conflict_resolved or is_ahead)
+        
+        local diff_percent = math.abs(r_percent - l_percent)
+        
+        -- Verifica se vale a pena mover (diferença existe e sync foi aprovado)
+        if should_sync and (diff_percent > 0.001) then
             
-            UIManager:show(InfoMessage:new{ text = "Sync: Indo para Pág " .. r_page, timeout = 2 })
+            self.blocking_autosave = true 
+            
+            -- [CÁLCULO DINÂMICO]
+            local target_page = r_page 
+            
+            if r_percent > 0 and state.total_pages and state.total_pages > 0 then
+                target_page = math.floor(state.total_pages * r_percent)
+                if target_page < 1 then target_page = 1 end
+                if target_page > state.total_pages then target_page = state.total_pages end
+                
+                logger.info(string.format("Sidekick: Avançando para Pg %d (%.2f%%) - Motivo: Ahead=%s, Newer=%s", target_page, r_percent*100, tostring(is_ahead), tostring(is_newer)))
+            else
+                logger.info("Sidekick: Usando número de página remoto direto.")
+            end
+            
+            UIManager:show(InfoMessage:new{ text = "Sync: Indo para Pág " .. target_page, timeout = 2 })
             
             UIManager:nextTick(function()
-                logger.info("Sidekick: Broadcastindo evento GotoPage para", r_page)
-                UIManager:broadcastEvent(Event:new("GotoPage", r_page))
-                
-                UIManager:scheduleIn(2, function()
+                UIManager:broadcastEvent(Event:new("GotoPage", target_page))
+                self.last_local_interaction = os.time() 
+                UIManager:scheduleIn(3, function()
                     self.blocking_autosave = false
                 end)
             end)
         else
-            logger.info("Sidekick: Sincronização OK (Remoto não é maior). Nenhuma ação necessária.")
+            -- Se não sincronizou, mas o remoto era maior, significa que estamos "travados" por algum motivo?
+            -- Com a lógica 'is_ahead', isso não deve mais acontecer.
+            logger.info("Sidekick: Nada a fazer (Sincronizado ou Local é Maior).")
             self.blocking_autosave = false
         end
     else
-        logger.info("Sidekick: Nenhum dado remoto valido encontrado.")
         self.blocking_autosave = false
     end
 end
