@@ -14,18 +14,15 @@ function Utils.logErr(...)  logger.err("Sidekick:", ...) end
 
 -- === Carregamento do settings.json Local ===
 
--- Obtém o caminho absoluto da pasta onde este arquivo utils.lua está
 local function get_plugin_path()
     local path = debug.getinfo(1).source:match("@?(.*[\\/])")
     return path or ""
 end
 
--- Lê o arquivo settings.json local
 function Utils.load_config()
     local path = get_plugin_path() .. "settings.json"
     local f = io.open(path, "r")
     
-    -- Valores padrão caso falhe
     local config = {
         url = "http://127.0.0.1:8384",
         api_key = "",
@@ -54,7 +51,6 @@ function Utils.load_config()
 end
 
 function Utils.triggerSyncthing(specific_path)
-    -- Carrega a config fresca do arquivo a cada execução
     local config = Utils.load_config()
     
     local url = config.url
@@ -66,7 +62,6 @@ function Utils.triggerSyncthing(specific_path)
         return 
     end
 
-    -- Remove barra final da URL se houver
     url = url:gsub("/+$", "")
 
     local full_url = string.format("%s/rest/db/scan?folder=%s", url, folder_id)

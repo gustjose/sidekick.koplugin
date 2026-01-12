@@ -71,12 +71,10 @@ function SideKickSync:addToMainMenu(menu_items)
                     self:checkSync() 
                 end
             },
-            -- Removido menu de configuração para evitar crashes
         }
     }
 end
 
---- Coleta o estado atual da leitura
 function SideKickSync:getCurrentState()
     local page = nil
     local percent = nil
@@ -156,13 +154,13 @@ function SideKickSync:triggerAutoSave()
     
     local agora = os.time()
     if self.time_next_sync < agora then
-        self:executeSave(true)
+        self:executeSave(true, false)
         self.time_next_sync = agora + self.delay
-        utils.logInfo("Autosave - Salvo.")
     end
 end
 
-function SideKickSync:executeSave(is_background)
+-- MUDANÇA: Recebe o parametro sync_network
+function SideKickSync:executeSave(is_background, sync_network)
     if self.is_saving then return end
     if self.blocking_autosave then return end
 
@@ -174,9 +172,12 @@ function SideKickSync:executeSave(is_background)
             if not is_background then
                 UIManager:show(InfoMessage:new{ text = "Progresso Salvo!", timeout = 1 })
             end
-            local filename = state.file:match("([^/]+)$")
-            local sidekick_file = filename .. ".sidekick.json"
-            utils.triggerSyncthing(sidekick_file) 
+            
+            if sync_network then
+                local filename = state.file:match("([^/]+)$")
+                local sidekick_file = filename .. ".sidekick.json"
+                utils.triggerSyncthing(sidekick_file) 
+            end
         end
     end
     self.is_saving = false
@@ -189,8 +190,8 @@ function SideKickSync:onSuspend() self:forceSave(true) end
 function SideKickSync:onQuit() self:forceSave(true) end
 
 function SideKickSync:forceSave(silent)
-    utils.logInfo("Executando salvamento forçado.")
-    self:executeSave(silent)
+    utils.logInfo("Executando salvamento forçado (com Sync).")
+    self:executeSave(silent, true)
 end
 
 function SideKickSync:checkSync()
@@ -225,7 +226,7 @@ function SideKickSync:checkSync()
                 if target_page > state.total_pages then target_page = state.total_pages end
             end
             
-            UIManager:show(InfoMessage:new{ text = "Sync: Indo para Pág " .. target_page, timeout = 2 })
+            UIManager:show(InfoMessage:new{ text = "Sync: Pág " .. target_page, timeout = 2 })
             
             UIManager:nextTick(function()
                 UIManager:broadcastEvent(Event:new("GotoPage", target_page))
