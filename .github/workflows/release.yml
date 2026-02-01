@@ -1,47 +1,85 @@
-name: Release Plugin
+name: AI Release Sidekick
 
 on:
   push:
     tags:
       - "*"
 
-permissions:
-  contents: write
-
 jobs:
-  build-and-release:
+  build-release:
     name: Build and Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Prepare Zip
+      # --- 1. Preparação do Ambiente Python (Para a IA) ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install Python Dependencies
+        run: pip install google-genai
+
+      # --- 2. Coleta de Dados para a IA ---
+      - name: Get Git Data
         run: |
-          PLUGIN_FOLDER="sidekick.koplugin"
+          # Pega a tag anterior para saber o intervalo de mudanças
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)
+          echo "Comparando HEAD com $PREVIOUS_TAG"
 
-          mkdir -p release_tmp/$PLUGIN_FOLDER
+          # Gera logs focados no código (excluindo arquivos de infraestrutura)
+          git log $PREVIOUS_TAG..HEAD --pretty=format:"- %s" -- . ":(exclude).github" ":(exclude)scripts" > commits.txt
 
-          rsync -av . release_tmp/$PLUGIN_FOLDER/ \
+          # Gera o diff (limitado para não estourar o prompt)
+          git diff $PREVIOUS_TAG..HEAD -- . ":(exclude).github" ":(exclude)scripts" > changes.diff
+
+      # --- 3. Geração das Notas via Gemini ---
+      - name: Generate Notes with Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: python .github/workflows/generate_notes.py
+
+      # --- 4. Empacotamento do Plugin (Zip Correto) ---
+      - name: Prepare Zip Package
+        run: |
+          # Define a pasta temporária
+          mkdir -p release_tmp
+
+          # Copia apenas o necessário (simulando a estrutura final)
+          # Ajuste o ponto (.) abaixo se seus arquivos lua estiverem dentro de uma pasta "sidekick.koplugin"
+          rsync -av . release_tmp/ \
             --exclude="scripts" \
-            --exclude=".gitattributes" \
-            --exclude=".git" \
+            --exclude=".git*" \
             --exclude=".github" \
-            --exclude=".gitignore" \
             --exclude="release_tmp" \
-            --exclude="*.zip"
+            --exclude="*.zip" \
+            --exclude="commits.txt" \
+            --exclude="changes.diff" \
+            --exclude="gemini_notes.md" \
+            --exclude="settings.json"
 
-          # Entra na pasta temporária e cria o zip
+          # Cria o zip entrando na pasta (estrutura plana)
           cd release_tmp
-          zip -r ../sidekick.koplugin.zip $PLUGIN_FOLDER
+          zip -r ../sidekick.koplugin.zip .
           cd ..
 
-          echo "Zip criado com sucesso."
+          echo "✅ Zip criado: sidekick.koplugin.zip"
 
-      - name: Create Release
+      # --- 5. Criação da Release no GitHub ---
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: sidekick.koplugin.zip
-          generate_release_notes: true
+          body_path: gemini_notes.md
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
           make_latest: true
+          files: sidekick.koplugin.zip
