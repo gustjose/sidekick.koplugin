@@ -17,6 +17,7 @@ local SideKickSync = WidgetContainer:extend{
     time_next_sync = os.time(),
     delay = 5,
     last_local_interaction = 0,
+    local_revision = 0,
 }
 
 function SideKickSync:init()
@@ -31,6 +32,20 @@ end
 
 function SideKickSync:onReaderReady()
     utils.logInfo("Reader pronto. Iniciando verificacao de Sync...")
+    
+    -- Inicializa a revisão local buscando apenas os dados DESTE dispositivo
+    -- para evitar falsos positivos de "já estou atualizado"
+    local state = self:getCurrentState()
+    if state then
+        local my_data = progress.get_my_data({ file = state.file })
+        if my_data and my_data.revision then
+            self.local_revision = my_data.revision
+        else
+            self.local_revision = 0
+        end
+        utils.logInfo("Revision inicial (Local):", self.local_revision)
+    end
+
     UIManager:scheduleIn(2, function() self:checkSync() end)
 end
 
@@ -60,9 +75,9 @@ function SideKickSync:addToMainMenu(menu_items)
                     local doc_state = self:getCurrentState()
                     local msg = ""
                     if doc_state then
-                        msg = string.format("Local: Pg %d/%d (%.1f%%)", 
+                        msg = string.format("Rev: %d | Pg %d/%.1f%%", 
+                            self.local_revision,
                             doc_state.page or 0, 
-                            doc_state.total_pages or 0,
                             (doc_state.percent or 0) * 100)
                     else
                         msg = "Erro ao ler estado"
@@ -159,7 +174,6 @@ function SideKickSync:triggerAutoSave()
     end
 end
 
--- MUDANÇA: Recebe o parametro sync_network
 function SideKickSync:executeSave(is_background, sync_network)
     if self.is_saving then return end
     if self.blocking_autosave then return end
@@ -167,10 +181,14 @@ function SideKickSync:executeSave(is_background, sync_network)
     self.is_saving = true
     local state = self:getCurrentState()
     if state then
-        local saved = progress.save_from_cache(state, is_background)
+        -- O save retorna (sucesso, nova_revisao)
+        local saved, new_rev = progress.save_from_cache(state, is_background)
+        
         if saved then
+            if new_rev then self.local_revision = new_rev end
+            
             if not is_background then
-                UIManager:show(InfoMessage:new{ text = "Progresso Salvo!", timeout = 1 })
+                UIManager:show(InfoMessage:new{ text = "Salvo Rev: " .. (new_rev or "?"), timeout = 1 })
             end
             
             if sync_network then
@@ -200,25 +218,41 @@ function SideKickSync:checkSync()
     if not state then return end
     
     local fake_doc = { file = state.file, getVmPage = function() return state.page end }
-    local remote_data, conflict_resolved = progress.check_remote_progress(fake_doc)
     
-    if remote_data then
-        local r_page = tonumber(remote_data.page) or 0
-        local r_timestamp = tonumber(remote_data.timestamp) or 0
-        local r_percent = tonumber(remote_data.percent) or 0
+    -- Obtém o "Vencedor" global (melhor candidato entre todos os devices)
+    local best_remote, conflict_resolved = progress.check_remote_progress(fake_doc)
+    
+    if best_remote then
+        local r_rev = best_remote.revision or 0
+        local r_page = tonumber(best_remote.page) or 1
+        local r_percent = tonumber(best_remote.percent) or 0
         local l_percent = state.percent or 0
 
-        utils.logInfo(string.format("Check Sync - Remoto: %.2f%% (%d) vs Local: %.2f%% (%d)", 
-            r_percent*100, r_timestamp, l_percent*100, self.last_local_interaction))
+        utils.logInfo(string.format("Check Sync - Remoto (Rev %d, %.2f%%) vs Local (Rev %d, %.2f%%)", 
+            r_rev, r_percent*100, self.local_revision, l_percent*100))
 
-        local is_newer = r_timestamp > self.last_local_interaction
-        local is_ahead = r_percent > (l_percent + 0.001) 
+        local should_sync = false
         
-        local should_sync = (is_newer or conflict_resolved or is_ahead)
+        -- 1. Regra de Ouro: Revision Remota > Revision Local (Minha)
+        if r_rev > self.local_revision then
+             should_sync = true
+        
+        -- 2. Se houve conflito resolvido e o resultado difere do meu estado
+        elseif conflict_resolved then
+             if math.abs(r_percent - l_percent) > 0.001 then
+                 should_sync = true
+             end
+        end
+        
+        -- Evita sync desnecessário se a diferença for infíma
         local diff_percent = math.abs(r_percent - l_percent)
         
         if should_sync and (diff_percent > 0.001) then
             self.blocking_autosave = true 
+            
+            -- Aceita a nova revisão como verdade e atualiza minha memória
+            self.local_revision = r_rev
+            
             local target_page = r_page 
             if r_percent > 0 and state.total_pages and state.total_pages > 0 then
                 target_page = math.floor(state.total_pages * r_percent)

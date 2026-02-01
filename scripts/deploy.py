@@ -6,7 +6,7 @@ import signal
 
 # --- CONFIGURAÇÕES ---
 # Caminho do seu ADB (peguei do seu log anterior)
-ADB_PATH = r"E:\Program Files\android-tools\adb.exe"
+ADB_PATH = r"C:\Program Files\Android Tools\adb.exe"
 
 # Pasta no Android onde o plugin fica
 REMOTE_PATH = "/storage/emulated/0/koreader/plugins/sidekick.koplugin/"

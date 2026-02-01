@@ -2,14 +2,19 @@ local json = require("json")
 local docsettings = require("frontend/docsettings")
 local lfs = require("libs/libkoreader-lfs")
 local utils = require("utils")
+local device = require("device") 
 
 local Progress = {
     extension = ".sidekick.json" 
 }
 
---- Gera o caminho completo para o arquivo de progresso (.sidekick.json) no diretório sdr.
--- @param doc_file String: Caminho absoluto do arquivo do documento.
--- @return String|nil: Caminho completo do json ou nil em caso de erro.
+--- Obtém um ID único para o dispositivo atual
+function Progress.get_device_id()
+    -- Tenta usar o serial, id ou modelo para garantir unicidade
+    return device.serial or device.id or device.model or "unknown_device"
+end
+
+--- Gera o caminho completo para o arquivo de progresso
 function Progress.get_sidekick_path(doc_file)
     if not doc_file then return nil end
     
@@ -25,9 +30,7 @@ function Progress.get_sidekick_path(doc_file)
     return sdr_dir .. "/" .. filename .. Progress.extension
 end
 
---- Lê e decodifica o arquivo JSON de progresso.
--- @param path String: Caminho do arquivo.
--- @return Table|nil: Tabela com os dados ou nil se falhar.
+--- Lê o JSON completo (tabela de dispositivos)
 function Progress.read_json(path)
     local f, err = io.open(path, "r")
     if not f then 
@@ -51,33 +54,83 @@ function Progress.read_json(path)
     return nil
 end
 
---- Salva o estado atual no arquivo JSON, respeitando a lógica de maior progresso.
--- Apenas salva se o progresso atual for maior ou igual ao do disco, ou se não houver arquivo.
--- @param state Table: Tabela contendo percent, page, etc.
--- @param background Boolean: Se verdadeiro, suprime mensagens de sucesso na UI (logs mantidos).
--- @return Boolean: True se salvou com sucesso, False caso contrário.
+--- Analisa os dados de TODOS os dispositivos e retorna o estado mais avançado (Vencedor)
+-- Critério: Maior Revision > Maior Porcentagem > Timestamp
+function Progress.get_best_candidate(all_data)
+    if not all_data then return nil end
+    
+    local best_entry = nil
+    
+    for dev_id, entry in pairs(all_data) do
+        if type(entry) == "table" and entry.revision then
+            if not best_entry then
+                best_entry = entry
+            else
+                -- 1. Critério Soberano: Revision
+                if entry.revision > best_entry.revision then
+                    best_entry = entry
+                
+                -- 2. Empate de Revision: Maior Porcentagem ganha
+                elseif entry.revision == best_entry.revision then
+                    local p1 = entry.percent or 0
+                    local p2 = best_entry.percent or 0
+                    if p1 > (p2 + 0.0001) then
+                        best_entry = entry
+                    end
+                end
+            end
+        end
+    end
+    
+    return best_entry
+end
+
+--- NOVO: Obtém especificamente os dados salvos por ESTE dispositivo
+function Progress.get_my_data(document)
+    if not document or not document.file then return nil end
+    
+    local filepath = Progress.get_sidekick_path(document.file)
+    local all_data = Progress.read_json(filepath)
+    
+    if not all_data then return nil end
+    
+    local my_id = Progress.get_device_id()
+    return all_data[my_id]
+end
+
+--- Salva o estado do dispositivo ATUAL, incrementando a revisão global.
 function Progress.save_from_cache(state, background)
     if not state or not state.file then return false end
 
     local filepath = Progress.get_sidekick_path(state.file)
     if not filepath then return false end
 
-    -- Dados estritamente necessários para a sincronização
-    local data = {
-        percent = state.percent,
-        page = state.page,
-        timestamp = os.time()
-    }
-
-    local existing_data = Progress.read_json(filepath)
+    -- 1. Ler dados existentes de todos os dispositivos
+    local all_data = Progress.read_json(filepath) or {}
     
-    -- Lógica de proteção: Disco tem mais progresso > Abortar save
-    if existing_data and existing_data.percent and existing_data.percent > (data.percent + 0.0001) then
-        utils.logWarn(string.format("Ignorando save. Disco tem mais progresso (%.2f%% vs %.2f%%).", existing_data.percent*100, data.percent*100))
-        return false
+    -- 2. Descobrir qual é a maior revisão GLOBAL atual (de qualquer dispositivo)
+    local max_global_rev = 0
+    for _, entry in pairs(all_data) do
+        if entry.revision and entry.revision > max_global_rev then
+            max_global_rev = entry.revision
+        end
     end
 
-    local status, json_str = pcall(json.encode, data)
+    -- 3. Preparar o payload do MEU dispositivo
+    -- A minha nova revisão deve ser maior que TUDO o que existe no arquivo agora
+    local my_new_rev = max_global_rev + 1
+    local my_id = Progress.get_device_id()
+
+    all_data[my_id] = {
+        revision = my_new_rev,
+        percent = state.percent,
+        page = state.page,
+        timestamp = os.time(),
+        device_model = device.model -- Apenas para debug/informação
+    }
+
+    -- 4. Gravar no disco
+    local status, json_str = pcall(json.encode, all_data)
     if not status then return false end
 
     local f, err = io.open(filepath, "w")
@@ -90,16 +143,14 @@ function Progress.save_from_cache(state, background)
     f:close()
 
     if not background then
-        utils.logInfo("Salvo com sucesso. Pg:", data.page)
+        utils.logInfo(string.format("Salvo: %s (Rev %d)", my_id, my_new_rev))
     end
     
-    return true
+    -- Retorna a nova revisão para atualizar a memória local
+    return true, my_new_rev
 end
 
---- Verifica e resolve conflitos de sincronização (arquivos sync-conflict gerados pelo Syncthing).
--- Mantém o arquivo (principal ou conflito) que tiver estritamente maior progresso.
--- @param main_filepath String: Caminho do arquivo JSON principal.
--- @return Boolean: True se houve alguma resolução de conflito, False caso contrário.
+--- Resolve conflitos comparando qual arquivo contém o candidato "Vencedor"
 function Progress.resolve_conflicts(main_filepath)
     local dir = main_filepath:match("^(.*)/")
     local filename = main_filepath:match("([^/]+)$")
@@ -115,53 +166,55 @@ function Progress.resolve_conflicts(main_filepath)
             local main_data = Progress.read_json(main_filepath)
             local conflict_data = Progress.read_json(conflict_path)
             
-            if not conflict_data or not conflict_data.percent then
-                utils.logWarn("Arquivo de conflito inválido. Deletando.")
-                os.remove(conflict_path)
-            else
-                local main_pct = (main_data and main_data.percent) or 0
-                local conf_pct = conflict_data.percent or 0
-                local should_replace = false
-                
-                if conf_pct > (main_pct + 0.0001) then
-                    utils.logInfo(string.format("Conflito VENCE (%.2f%% > %.2f%%).", conf_pct*100, main_pct*100))
+            -- Compara o "Melhor Candidato" de cada arquivo
+            local best_main = Progress.get_best_candidate(main_data)
+            local best_conf = Progress.get_best_candidate(conflict_data)
+            
+            local should_replace = false
+            
+            if not best_main and best_conf then
+                should_replace = true
+            elseif best_main and best_conf then
+                -- Se o arquivo de conflito tiver uma revisão MAIOR que o principal, ele ganha
+                if best_conf.revision > best_main.revision then
+                    utils.logInfo(string.format("Conflito VENCE por Revision (%d > %d).", best_conf.revision, best_main.revision))
                     should_replace = true
-                else
-                    utils.logInfo(string.format("Conflito PERDE ou EMPATA (%.2f%% vs %.2f%%). Deletando.", conf_pct*100, main_pct*100))
+                -- Empate de revisão: Porcentagem
+                elseif best_conf.revision == best_main.revision and (best_conf.percent or 0) > (best_main.percent or 0) then
+                    should_replace = true
                 end
+            end
 
-                if should_replace then
-                    os.remove(main_filepath) 
-                    local success, err = os.rename(conflict_path, main_filepath)
-                    if not success then
-                        utils.logErr("Falha ao renomear conflito:", err)
-                    end
-                    any_resolution = true
-                else
-                    os.remove(conflict_path)
-                end
+            if should_replace then
+                os.remove(main_filepath) 
+                local success, err = os.rename(conflict_path, main_filepath)
+                if not success then utils.logErr("Erro ao renomear conflito:", err) end
+                any_resolution = true
+            else
+                utils.logInfo("Conflito PERDE. Deletando.")
+                os.remove(conflict_path)
             end
         end
     end
     return any_resolution
 end
 
---- Verifica o progresso remoto lendo o arquivo JSON e resolvendo conflitos prévios.
--- @param document Table: Objeto documento contendo o caminho do arquivo.
--- @return Table|nil: Dados remotos (page, percent, timestamp) ou nil.
--- @return Boolean: Indica se houve resolução de conflito nesta verificação.
+--- Verifica o progresso remoto
+-- @return Table|nil: O "Melhor Candidato" (page, percent, revision) ou nil.
 function Progress.check_remote_progress(document)
     if not document or not document.file then return nil end
     
     local filepath = Progress.get_sidekick_path(document.file)
     local was_resolved = Progress.resolve_conflicts(filepath)
-    local data = Progress.read_json(filepath)
+    local all_data = Progress.read_json(filepath)
     
-    if data and data.page then
-        return data, was_resolved
+    local best = Progress.get_best_candidate(all_data)
+    
+    if best then
+        return best, was_resolved
     end
     
-    return nil
+    return nil, was_resolved
 end
 
 return Progress
