@@ -29,7 +29,7 @@ Unlike the built-in KOReader sync (which relies on a central Progress Sync serve
 4.  The final structure should look like: `.../plugins/sidekick.koplugin/main.lua`.
 5.  Restart KOReader.
 
-## ⚙️ How to Setup (The Syncthing Way)
+## How to Setup (The Syncthing Way)
 
 Sidekick generates a `.sidekick.json` file inside the `.sdr` metadata folder of your books. To sync your progress, you simply need to sync your books folder.
 
@@ -57,7 +57,7 @@ If you want Sidekick to force Syncthing to scan immediately after you close a bo
 
     - _`folder_id` is the ID of the folder in Syncthing that contains your books._
 
-## 🛠️ Usage
+## Usage
 
 The plugin works mostly in the background, but adds a **SideKick Sync** menu to the main menu (usually under the "Search" or "Tools" tab).
 
@@ -65,7 +65,7 @@ The plugin works mostly in the background, but adds a **SideKick Sync** menu to 
 - **Force Save:** Manually writes your current position to the sync file.
 - **Check for Updates:** Checks GitHub for new versions of the plugin and installs them automatically.
 
-## 🔧 Development
+## Development
 
 If you want to contribute or build from source:
 
@@ -80,7 +80,7 @@ If you want to contribute or build from source:
 - **`scripts/release.py`**: Automates version bumping, tagging, and creating GitHub releases with AI-generated notes.
 - **`tests/mock_server/`**: Contains a local server to test the OTA (Over-The-Air) update functionality without pushing to GitHub.
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).  
 Copyright © 2025 Gustavo Carreiro.

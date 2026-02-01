@@ -34,11 +34,11 @@ jobs:
           PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)
           echo "Comparando HEAD com $PREVIOUS_TAG"
 
-          # Gera logs focados no código (excluindo arquivos de infraestrutura)
-          git log $PREVIOUS_TAG..HEAD --pretty=format:"- %s" -- . ":(exclude).github" ":(exclude)scripts" > commits.txt
+          # Gera logs focados no código (src) e documentação, excluindo scripts de build
+          git log $PREVIOUS_TAG..HEAD --pretty=format:"- %s" -- src/ README.md > commits.txt
 
-          # Gera o diff (limitado para não estourar o prompt)
-          git diff $PREVIOUS_TAG..HEAD -- . ":(exclude).github" ":(exclude)scripts" > changes.diff
+          # Gera o diff (limitado na coleta posterior pelo Python, se necessário)
+          git diff $PREVIOUS_TAG..HEAD -- src/ README.md > changes.diff
 
       # --- 3. Geração das Notas via Gemini ---
       - name: Generate Notes with Gemini
@@ -53,25 +53,20 @@ jobs:
           # Define a pasta temporária
           mkdir -p release_tmp
 
-          # Copia apenas o necessário (simulando a estrutura final)
-          # Ajuste o ponto (.) abaixo se seus arquivos lua estiverem dentro de uma pasta "sidekick.koplugin"
-          rsync -av . release_tmp/ \
-            --exclude="scripts" \
-            --exclude=".git*" \
-            --exclude=".github" \
-            --exclude="release_tmp" \
-            --exclude="*.zip" \
-            --exclude="commits.txt" \
-            --exclude="changes.diff" \
-            --exclude="gemini_notes.md" \
-            --exclude="settings.json"
+          # 1. Copia o código fonte de src/ para a raiz do temp (Flat Structure)
+          cp -r src/* release_tmp/
 
-          # Cria o zip entrando na pasta (estrutura plana)
+          # 2. Copia arquivos importantes da raiz do projeto (README, LICENSE)
+          # O "|| true" impede erro se o arquivo não existir
+          cp README.md LICENSE release_tmp/ 2>/dev/null || true
+
+          # 3. Cria o zip entrando na pasta temporária
+          # Isso garante que o zip não tenha uma pasta pai (ex: release_tmp/)
           cd release_tmp
           zip -r ../sidekick.koplugin.zip .
           cd ..
 
-          echo "✅ Zip criado: sidekick.koplugin.zip"
+          echo "✅ Zip criado com sucesso: sidekick.koplugin.zip"
 
       # --- 5. Criação da Release no GitHub ---
       - name: Create GitHub Release
