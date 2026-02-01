@@ -1,6 +1,8 @@
 local logger = require("logger")
 local ltn12 = require("ltn12")
-local json = require("json") 
+local json = require("json")
+local NetworkMgr = require("ui/network/manager")
+local device = require("device")
 
 -- Tenta carregar bibliotecas de rede
 local http = require("socket.http")
@@ -51,6 +53,11 @@ function Utils.load_config()
 end
 
 function Utils.triggerSyncthing(specific_path)
+    if not device.isAndroid and not NetworkMgr:isWifiOn() then
+        Utils.logInfo("Wi-Fi desligado (E-ink). Ignorando trigger do Syncthing.")
+        return
+    end
+
     local config = Utils.load_config()
     
     local url = config.url
