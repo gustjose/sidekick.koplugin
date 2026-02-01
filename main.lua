@@ -219,13 +219,14 @@ function SideKickSync:checkSync()
     
     local fake_doc = { file = state.file, getVmPage = function() return state.page end }
     
-    -- Obtém o "Vencedor" global (melhor candidato entre todos os devices)
+    -- Obtém o "Vencedor" global
     local best_remote, conflict_resolved = progress.check_remote_progress(fake_doc)
     
     if best_remote then
         local r_rev = best_remote.revision or 0
         local r_page = tonumber(best_remote.page) or 1
         local r_percent = tonumber(best_remote.percent) or 0
+        local r_xpath = best_remote.xpath -- Captura o XPath remoto
         local l_percent = state.percent or 0
 
         utils.logInfo(string.format("Check Sync - Remoto (Rev %d, %.2f%%) vs Local (Rev %d, %.2f%%)", 
@@ -233,40 +234,58 @@ function SideKickSync:checkSync()
 
         local should_sync = false
         
-        -- 1. Regra de Ouro: Revision Remota > Revision Local (Minha)
+        -- 1. Regra de Ouro: Revision Remota > Minha Revision
         if r_rev > self.local_revision then
              should_sync = true
-        
-        -- 2. Se houve conflito resolvido e o resultado difere do meu estado
         elseif conflict_resolved then
              if math.abs(r_percent - l_percent) > 0.001 then
                  should_sync = true
              end
         end
         
-        -- Evita sync desnecessário se a diferença for infíma
         local diff_percent = math.abs(r_percent - l_percent)
         
-        if should_sync and (diff_percent > 0.001) then
+        -- Adicionamos verificação se o xpath é diferente (para garantir precisão mesmo com % igual)
+        local xpath_changed = (r_xpath and r_xpath ~= state.xpath)
+
+        if should_sync and (diff_percent > 0.001 or xpath_changed) then
             self.blocking_autosave = true 
-            
-            -- Aceita a nova revisão como verdade e atualiza minha memória
             self.local_revision = r_rev
             
-            local target_page = r_page 
-            if r_percent > 0 and state.total_pages and state.total_pages > 0 then
-                target_page = math.floor(state.total_pages * r_percent)
-                if target_page < 1 then target_page = 1 end
-                if target_page > state.total_pages then target_page = state.total_pages end
+            -- LÓGICA DE PRECISÃO:
+            -- Se tiver XPath (EPUBs/FB2), usa ele. Se não (PDFs), calcula a página.
+            if r_xpath and type(r_xpath) == "string" and r_xpath ~= "" then
+                
+                UIManager:show(InfoMessage:new{
+                    text = _("Sincronizando..."),
+                    timeout = 2
+                })
+                
+                UIManager:nextTick(function()
+                    UIManager:broadcastEvent(Event:new("GotoXPointer", r_xpath))
+                    self.last_local_interaction = os.time() 
+                    UIManager:scheduleIn(3, function() self.blocking_autosave = false end)
+                end)
+                
+            else
+                local target_page = r_page 
+                if r_percent > 0 and state.total_pages and state.total_pages > 0 then
+                    target_page = math.floor(state.total_pages * r_percent)
+                    if target_page < 1 then target_page = 1 end
+                    if target_page > state.total_pages then target_page = state.total_pages end
+                end
+
+                UIManager:show(InfoMessage:new{ 
+                    text = _("Sincronizando: Página ") .. target_page,
+                    timeout = 2 
+                })
+                
+                UIManager:nextTick(function()
+                    UIManager:broadcastEvent(Event:new("GotoPage", target_page))
+                    self.last_local_interaction = os.time() 
+                    UIManager:scheduleIn(3, function() self.blocking_autosave = false end)
+                end)
             end
-            
-            UIManager:show(InfoMessage:new{ text = "Sync: Pág " .. target_page, timeout = 2 })
-            
-            UIManager:nextTick(function()
-                UIManager:broadcastEvent(Event:new("GotoPage", target_page))
-                self.last_local_interaction = os.time() 
-                UIManager:scheduleIn(3, function() self.blocking_autosave = false end)
-            end)
         else
             self.blocking_autosave = false
         end

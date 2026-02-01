@@ -125,8 +125,9 @@ function Progress.save_from_cache(state, background)
         revision = my_new_rev,
         percent = state.percent,
         page = state.page,
+        xpath = state.xpath,
         timestamp = os.time(),
-        device_model = device.model -- Apenas para debug/informação
+        device_model = device.model
     }
 
     -- 4. Gravar no disco
