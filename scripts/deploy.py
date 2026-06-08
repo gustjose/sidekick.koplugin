@@ -95,8 +95,17 @@ def stream_logs():
         print(f"\n{Colors.OKBLUE}Encerrado.{Colors.ENDC}")
         process.terminate()
 
+def restart_koreader():
+    """Para e reinicia o aplicativo KOReader no dispositivo Android via ADB."""
+    print(f"{Colors.HEADER}--- 1.5. Reiniciando KOReader ---{Colors.ENDC}")
+    run_command(f'"{ADB_PATH}" shell am force-stop org.koreader.launcher')
+    time.sleep(0.5)
+    run_command(f'"{ADB_PATH}" shell monkey -p org.koreader.launcher -c android.intent.category.LAUNCHER 1')
+    print(f"{Colors.OKGREEN}KOReader reiniciado.{Colors.ENDC}\n")
+
 if __name__ == "__main__":
     sync_files()
+    restart_koreader()
     clear_logs()
     time.sleep(1)
     clear_screen()

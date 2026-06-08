@@ -30,13 +30,16 @@ function SideKickSync:init()
     utils.logInfo("Modulo inicializado.")
 end
 
+--- Callback disparado quando o leitor está pronto. Realiza a migração de dados antigos se necessário,
+-- inicializa a revisão local de sincronização e agenda a primeira verificação com o servidor.
 function SideKickSync:onReaderReady()
     utils.logInfo("Reader pronto. Iniciando verificacao de Sync...")
     
-    -- Inicializa a revisão local buscando apenas os dados DESTE dispositivo
-    -- para evitar falsos positivos de "já estou atualizado"
     local state = self:getCurrentState()
     if state then
+        progress.migrate_old_sync(state.file)
+        progress.cleanup_orphans(state.file)
+        
         local my_data = progress.get_my_data({ file = state.file })
         if my_data and my_data.revision then
             self.local_revision = my_data.revision
