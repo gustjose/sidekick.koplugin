@@ -1,6 +1,7 @@
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
+local InputDialog = require("ui/widget/inputdialog")
 local ReaderUI = require("apps/reader/readerui")
 local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
@@ -11,7 +12,7 @@ local progress_ok, progress = pcall(require, "progress")
 
 local SideKickSync = WidgetContainer:extend{
     name = "SideKickSync",
-    is_doc_only = true,
+    is_doc_only = false,
     is_saving = false,
     blocking_autosave = true, 
     time_next_sync = os.time(),
@@ -65,32 +66,119 @@ function SideKickSync:onDispatcherRegisterActions()
 end
 
 function SideKickSync:addToMainMenu(menu_items)
+    local sub_items = {}
+    
+    if self.ui.document then
+        table.insert(sub_items, {
+            text = "Forçar Salvamento",
+            callback = function() self:forceSave() end
+        })
+        table.insert(sub_items, {
+            text = "Verificar Status",
+            separator = true,
+            callback = function() 
+                local doc_state = self:getCurrentState()
+                local msg = ""
+                if doc_state then
+                    msg = string.format("Rev: %d | Pg %d/%.1f%%", 
+                        self.local_revision,
+                        doc_state.page or 0, 
+                        (doc_state.percent or 0) * 100)
+                else
+                    msg = "Erro ao ler estado"
+                end
+                UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
+                self:checkSync() 
+            end
+        })
+    end
+    
+    table.insert(sub_items, {
+        text = "Configurações do Sidekick",
+        sub_item_table_func = function()
+            return self:getSettingsMenu()
+        end
+    })
+
     menu_items.sidekick = {
         text = "SideKick Sync",
-        sub_item_table = {
-            {
-                text = "Forçar Salvamento",
-                callback = function() self:forceSave() end
-            },
-            {
-                text = "Verificar Status",
-                callback = function() 
-                    local doc_state = self:getCurrentState()
-                    local msg = ""
-                    if doc_state then
-                        msg = string.format("Rev: %d | Pg %d/%.1f%%", 
-                            self.local_revision,
-                            doc_state.page or 0, 
-                            (doc_state.percent or 0) * 100)
-                    else
-                        msg = "Erro ao ler estado"
-                    end
-                    UIManager:show(InfoMessage:new{ text = msg, timeout = 3 })
-                    self:checkSync() 
-                end
-            },
-        }
+        sub_item_table = sub_items
     }
+end
+
+--- Retorna a tabela do submenu de configurações gerada dinamicamente
+function SideKickSync:getSettingsMenu()
+    local config = utils.load_config()
+    local menu = {}
+    
+    local is_enabled = true
+    if config.enable_syncthing ~= nil then
+        is_enabled = config.enable_syncthing
+    end
+    
+    table.insert(menu, {
+        text = "Sinalizar para Syncthing",
+        separator = true,
+        checked_func = function() return is_enabled end,
+        callback = function()
+            config.enable_syncthing = not is_enabled
+            utils.save_config(config)
+        end
+    })
+    
+    local keys_to_show = { "url", "api_key", "folder_id" }
+    for i, key in ipairs(keys_to_show) do
+        local value = config[key] or ""
+        table.insert(menu, {
+            text = key .. ": " .. tostring(value),
+            callback = function()
+                self:showSettingDialog(key, value)
+            end
+        })
+    end
+    
+    return menu
+end
+
+--- Exibe um diálogo de input para editar uma chave de configuração
+function SideKickSync:showSettingDialog(key, current_value)
+    local dialog
+    dialog = InputDialog:new{
+        title = "Editar " .. key,
+        input = tostring(current_value),
+        buttons = {
+            {
+                {
+                    text = _("Cancelar"),
+                    id = "close",
+                    callback = function()
+                        dialog:onClose()
+                        UIManager:close(dialog)
+                    end,
+                },
+                {
+                    text = _("Salvar"),
+                    callback = function()
+                        local new_value = dialog:getInputValue()
+                        local config = utils.load_config()
+                        config[key] = new_value
+                        local success = utils.save_config(config)
+                        
+                        dialog:onClose()
+                        UIManager:close(dialog)
+                        
+                        if success then
+                            UIManager:show(InfoMessage:new{ text = "Salvo com sucesso!", timeout = 2 })
+                        else
+                            UIManager:show(InfoMessage:new{ text = "Erro ao salvar!", timeout = 2 })
+                        end
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
 end
 
 function SideKickSync:getCurrentState()

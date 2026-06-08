@@ -28,11 +28,14 @@ function Utils.load_config()
     local config = {
         url = "http://127.0.0.1:8384",
         api_key = "",
-        folder_id = "default"
+        folder_id = "default",
+        enable_syncthing = true
     }
 
     if not f then
         Utils.logWarn("Arquivo settings.json nao encontrado em:", path)
+        Utils.logInfo("Gerando arquivo settings.json com valores padrão.")
+        Utils.save_config(config)
         return config
     end
 
@@ -42,8 +45,9 @@ function Utils.load_config()
     if content then
         local ok, data = pcall(json.decode, content)
         if ok and type(data) == "table" then
+            for k, v in pairs(data) do config[k] = v end
             Utils.logInfo("Configurações carregadas de settings.json")
-            return data
+            return config
         else
             Utils.logErr("Erro ao decodificar settings.json")
         end
@@ -52,13 +56,38 @@ function Utils.load_config()
     return config
 end
 
+function Utils.save_config(config_table)
+    local path = get_plugin_path() .. "settings.json"
+    local f, err = io.open(path, "w")
+    if not f then
+        Utils.logErr("Nao foi possivel abrir settings.json para escrita: " .. tostring(err))
+        return false
+    end
+
+    local ok, json_str = pcall(json.encode, config_table)
+    if not ok then
+        f:close()
+        Utils.logErr("Erro ao codificar settings.json")
+        return false
+    end
+
+    f:write(json_str)
+    f:close()
+    return true
+end
+
 function Utils.triggerSyncthing(specific_path)
+    local config = Utils.load_config()
+    
+    if config.enable_syncthing == false then
+        Utils.logInfo("Sinalizacao para Syncthing desativada nas configuracoes.")
+        return
+    end
+
     if not device.isAndroid and not NetworkMgr:isWifiOn() then
         Utils.logInfo("Wi-Fi desligado (E-ink). Ignorando trigger do Syncthing.")
         return
     end
-
-    local config = Utils.load_config()
     
     local url = config.url
     local api_key = config.api_key

@@ -31,39 +31,33 @@ Unlike the built-in KOReader sync (which relies on a central Progress Sync serve
 
 ## How to Setup (The Syncthing Way)
 
-Sidekick generates a `.sidekick.json` file inside the `.sdr` metadata folder of your books. To sync your progress, you simply need to sync your books folder.
+Sidekick automatically generates a `.sidekick_sync` hidden folder inside the base directory of your books to securely store all your progress metadata in a centralized way. To sync your progress, you simply need to sync your books folder.
 
 1.  **Install Sidekick** on all your devices.
 2.  **Install Syncthing** (or use Mobius/SyncTrayzor) on your devices.
 3.  **Sync your Books:** Configure Syncthing to synchronize your library folder (e.g., `/mnt/sdcard/Books`).
-    - _Note:_ Ensure that the `.sdr` folders (where KOReader saves metadata) are included in the synchronization.
+    - _Note:_ Since Sidekick creates a `.sidekick_sync` folder, Syncthing will naturally pick it up and synchronize it in the background along with your books.
 4.  **Read!** Sidekick automatically saves your progress when you close a book, suspend the device, or turn a page (configurable).
 
 ### Optional: Instant Sync Trigger
 
 If you want Sidekick to force Syncthing to scan immediately after you close a book (for faster sync):
 
-1.  Open the `sidekick.koplugin` folder on your device.
-2.  Edit `settings.json`.
-3.  Fill in your Syncthing API details:
-
-    ```json
-    {
-      "url": "[http://127.0.0.1:8384](http://127.0.0.1:8384)",
-      "api_key": "YOUR_SYNCTHING_API_KEY_HERE",
-      "folder_id": "default"
-    }
-    ```
+1.  Open the KOReader menu and locate the **SideKick Sync** plugin.
+2.  Tap on **Configurações do Sidekick**.
+3.  Ensure the option **Sinalizar para Syncthing** is checked.
+4.  Tap on the other options (`url`, `api_key`, `folder_id`) to easily edit your Syncthing API details directly using your device's keyboard.
 
     - _`folder_id` is the ID of the folder in Syncthing that contains your books._
 
 ## Usage
 
-The plugin works mostly in the background, but adds a **SideKick Sync** menu to the main menu (usually under the "Search" or "Tools" tab).
+The plugin works mostly in the background, but adds a **SideKick Sync** menu to the main menu. The configuration menu is accessible globally (even in the File Manager), while document-specific actions appear only when you have a book open.
 
-- **Check Status:** Shows your current local revision and page vs. the remote file.
-- **Force Save:** Manually writes your current position to the sync file.
-- **Check for Updates:** Checks GitHub for new versions of the plugin and installs them automatically.
+- **Forçar Salvamento:** Manually writes your current position to the sync file.
+- **Verificar Status:** Shows your current local revision and page vs. the remote file.
+- **Configurações do Sidekick:** A fully functional native UI to manage your Syncthing credentials, toggle API triggers, and manage sync behavior.
+- **Automated Garbage Collection:** The plugin now intelligently sweeps and cleans up orphaned sync files of books you have already deleted from your device to save space.
 
 ## Development
 
