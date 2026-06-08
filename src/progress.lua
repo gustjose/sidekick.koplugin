@@ -18,16 +18,6 @@ end
 
 local docsettings = require("frontend/docsettings")
 
---- Função nativa de hash (djb2) para evitar dependência de bibliotecas criptográficas externas.
-local function simple_hash(str)
-    local hash = 5381
-    for i = 1, #str do
-        hash = (hash * 33) + string.byte(str, i)
-        hash = hash % 4294967296
-    end
-    return string.format("%x", hash)
-end
-
 --- Obtém o caminho centralizado para o arquivo de progresso de um e-book.
 -- @param doc_file string O caminho absoluto do arquivo do e-book.
 -- @return string|nil O caminho do arquivo de sincronização ou nil em caso de falha.
@@ -59,9 +49,8 @@ function Progress.get_sidekick_path(doc_file)
     end
 
     local filename = doc_file:match("([^/]+)$") or "unknown"
-    local file_hash = simple_hash(doc_file)
     
-    local sync_filename = filename .. "_" .. file_hash .. Progress.extension
+    local sync_filename = filename .. Progress.extension
     local final_path = sync_dir .. "/" .. sync_filename
     utils.logInfo("get_sidekick_path: Caminho final: " .. tostring(final_path))
 
@@ -285,7 +274,7 @@ function Progress.check_remote_progress(document)
     return nil, was_resolved
 end
 
---- Realiza a migração sob demanda (lazy migration) de um arquivo de progresso antigo para o formato centralizado.
+--- Realiza a migração sob demanda (lazy migration) de arquivos de progresso antigos para o formato centralizado sem hash.
 -- @param doc_file string O caminho absoluto do arquivo do e-book.
 -- @return boolean Retorna verdadeiro se a migração ocorreu com sucesso, ou falso caso contrário.
 function Progress.migrate_old_sync(doc_file)
@@ -293,50 +282,75 @@ function Progress.migrate_old_sync(doc_file)
         return false
     end
 
-    local old_filepath = doc_file .. Progress.extension
-    local mode = lfs.attributes(old_filepath, "mode")
+    local book_dir = doc_file:match("^(.*)/")
+    local filename = doc_file:match("([^/]+)$") or "unknown"
+    local sync_dir = book_dir and (book_dir .. "/.sidekick_sync")
+    local new_filepath = Progress.get_sidekick_path(doc_file)
+    if not new_filepath then return false end
+
+    local files_to_migrate = {}
+
+    -- 1. Formato pré-hash (raiz)
+    local root_filepath = doc_file .. Progress.extension
+    if lfs.attributes(root_filepath, "mode") == "file" then
+        table.insert(files_to_migrate, root_filepath)
+    end
     
-    if not mode then
-        local sdr_dir = docsettings:getSidecarDir(doc_file)
-        if sdr_dir then
-            local filename = doc_file:match("([^/]+)$") or "unknown"
-            local sdr_filepath = sdr_dir .. "/" .. filename .. Progress.extension
-            if lfs.attributes(sdr_filepath, "mode") then
-                old_filepath = sdr_filepath
-                mode = "file"
+    -- 2. Formato pré-hash (SDR)
+    local sdr_dir = docsettings:getSidecarDir(doc_file)
+    if sdr_dir then
+        local sdr_filepath = sdr_dir .. "/" .. filename .. Progress.extension
+        if lfs.attributes(sdr_filepath, "mode") == "file" then
+            table.insert(files_to_migrate, sdr_filepath)
+        end
+    end
+
+    -- 3. Formato com hash em .sidekick_sync
+    if sync_dir and lfs.attributes(sync_dir, "mode") == "directory" then
+        for file in lfs.dir(sync_dir) do
+            if file ~= (filename .. Progress.extension) and file:find(filename, 1, true) == 1 and file:match("%.json$") and not file:find("sync%-conflict") then
+                if file:sub(-string.len(Progress.extension)) == Progress.extension then
+                    table.insert(files_to_migrate, sync_dir .. "/" .. file)
+                end
             end
         end
     end
 
-    if not mode then
-        utils.logInfo("migrate_old_sync: Nenhum arquivo antigo encontrado para " .. doc_file)
+    if #files_to_migrate == 0 then
         return false
     end
 
-    local data = Progress.read_json(old_filepath)
-    if not data then
-        utils.logWarn("Nao foi possivel ler os dados antigos de: " .. old_filepath)
-        return false
-    end
+    local merged_data = Progress.read_json(new_filepath) or {}
+    local any_migrated = false
 
-    data._meta = {
-        original_file = doc_file
-    }
-
-    local new_filepath = Progress.get_sidekick_path(doc_file)
-    if not new_filepath then
-        utils.logErr("Nao foi possivel obter o novo caminho de sincronizacao para: " .. doc_file)
-        return false
-    end
-
-    local saved = Progress.save_json(new_filepath, data)
-    if saved then
-        local removed, err = os.remove(old_filepath)
-        if not removed then
-            utils.logErr("Nao foi possivel remover o arquivo antigo " .. old_filepath .. ": " .. tostring(err))
+    for _, old_filepath in ipairs(files_to_migrate) do
+        local data = Progress.read_json(old_filepath)
+        if data then
+            for k, v in pairs(data) do
+                if type(v) == "table" and v.revision then
+                    if not merged_data[k] or (merged_data[k].revision and merged_data[k].revision < v.revision) then
+                        merged_data[k] = v
+                    end
+                elseif k == "_meta" and not merged_data._meta then
+                    merged_data._meta = v
+                end
+            end
+            any_migrated = true
         end
-        utils.logInfo("Migracao concluida para o livro " .. doc_file)
-        return true
+    end
+
+    if any_migrated then
+        if not merged_data._meta then
+            merged_data._meta = { original_file = doc_file }
+        end
+        local saved = Progress.save_json(new_filepath, merged_data)
+        if saved then
+            for _, old_filepath in ipairs(files_to_migrate) do
+                os.remove(old_filepath)
+            end
+            utils.logInfo("Migracao concluida e arquivos antigos removidos para o livro " .. doc_file)
+            return true
+        end
     end
 
     return false
@@ -369,7 +383,12 @@ function Progress.cleanup_orphans(doc_file)
 
             if data and data._meta and data._meta.original_file then
                 local orig_file = data._meta.original_file
-                local exists = lfs.attributes(orig_file, "mode")
+                local book_filename = orig_file:match("([^/]+)$") or ""
+                local local_book_path = book_dir .. "/" .. book_filename
+                
+                -- Checa a existência do livro pelo caminho relativo ao invés do absoluto,
+                -- para evitar exclusões errôneas quando dispositivos têm pontos de montagem diferentes.
+                local exists = lfs.attributes(local_book_path, "mode")
 
                 if not exists then
                     local success, err = os.remove(filepath)

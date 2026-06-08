@@ -15,7 +15,8 @@ FILES_TO_SYNC = [
     "src/main.lua",
     "src/progress.lua",
     "src/_meta.lua",
-    "src/utils.lua"
+    "src/utils.lua",
+    "i18n.lua"
 ]
 
 # Termo para filtrar no log
